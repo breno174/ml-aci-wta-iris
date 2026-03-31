@@ -56,8 +56,9 @@ def update_winning_neuron(input_vector, winning_weights, learning_rate=0.1):
 
 
 class DataProcessor:
-    def __init__(self, data):
+    def __init__(self, data, train_ratio=0.7):
         self.data = data
+        self.train_ratio = train_ratio
         self.processed_data = []
         self.group_especies = []
         self.training_data = []
@@ -102,8 +103,11 @@ class DataProcessor:
             temp_group = group[:]
             random.shuffle(temp_group)
 
-            self.training_data.extend(temp_group[:35])
-            self.test_data.extend(temp_group[35:])
+            # Calcula a quantidade de amostras de treino baseado na proporção
+            split_idx = int(len(temp_group) * self.train_ratio)
+
+            self.training_data.extend(temp_group[:split_idx])
+            self.test_data.extend(temp_group[split_idx:])
 
         random.shuffle(self.training_data)
         random.shuffle(self.test_data)
@@ -130,7 +134,9 @@ class DataProcessor:
         self.save_data_partition(self.data)
         self.get_knowledge_class()
         self.split_data()
-        # self.plot_data(self.test_data)
+        
+        # Informativo no terminal
+        print(f">> Dataset processado: {len(self.training_data)} amostras para Treino e {len(self.test_data)} para Teste.")
 
 
 class Winner_take_all:
@@ -443,6 +449,115 @@ class Winner_take_all:
 
         return self._winner(input_vector)
 
+    def test(self, test_data, train_data=None):
+        """
+        Classifica os dados de teste e avalia a qualidade do agrupamento.
+        """
+        print("\n" + "=" * 60)
+        print("          APLICAÇÃO DO TESTE NO MODELO WTA          ")
+        print("=" * 60)
+
+        neuron_labels = {}
+        if train_data:
+            print("\n>> PASSO 1: Identificar qual classe dominou cada neurônio <<")
+            neuron_classes = {i: [] for i in range(self.num_neurons)}
+
+            # Passa o dado de treino pra ver onde caem
+            for p in train_data:
+                vetor = [float(p[f]) for f in self.features]
+                vencedor = self.predict(vetor)
+                neuron_classes[vencedor].append(p["species"])
+
+            for i in range(self.num_neurons):
+                if neuron_classes[i]:
+                    most_common = max(
+                        set(neuron_classes[i]), key=neuron_classes[i].count
+                    )
+                    neuron_labels[i] = most_common
+                    print(
+                        f"   Neurônio {i+1} : especializou em -> {most_common} ({len(neuron_classes[i])} amostras associadas)"
+                    )
+                else:
+                    neuron_labels[i] = "Desconhecido"
+                    print(
+                        f"   Neurônio {i+1} : não capturou amostras de treino (inativo)"
+                    )
+
+        print("\n>> PASSO 2: Validar o conjunto de teste <<")
+        acertos = 0
+        total = len(test_data)
+
+        for idx, p in enumerate(test_data):
+            vetor = [float(p[f]) for f in self.features]
+            vencedor = self.predict(vetor)
+            real = p["species"]
+
+            if train_data:
+                predicao = neuron_labels[vencedor]
+                status = "✅ ACERTOU" if predicao == real else "❌ ERROU  "
+                if predicao == real:
+                    acertos += 1
+
+                print(
+                    f"   Teste #{idx+1:02d} | Categoria Real: {real:<15} | Caiu no N{vencedor+1} | Rotulo Assumido: {predicao:<15} -> {status}"
+                )
+            else:
+                print(
+                    f"   Teste #{idx+1:02d} | Categoria Real: {real:<15} | -> Caiu no Neurônio {vencedor+1}"
+                )
+
+        if train_data:
+            acuracia = (acertos / total) * 100
+            print("-" * 60)
+            print(f"🏆 Resultado Final: Acertou {acertos} de {total} ({acuracia:.2f}%)")
+        print("=" * 60 + "\n")
+
+        # --- PLOTAGEM DOS DADOS DE TESTE ---
+        plt.figure(figsize=(8, 6))
+        colors_data = {
+            "Iris-setosa": "red",
+            "Iris-versicolor": "green",
+            "Iris-virginica": "blue",
+        }
+        neuron_colors = ["black", "orange", "purple", "cyan"]
+
+        # 1. Plota os pontos reais de teste
+        for p in test_data:
+            x = float(p[self.features[0]])
+            y = float(p[self.features[1]]) if len(self.features) > 1 else 0
+            plt.scatter(
+                x, y, 
+                color=colors_data.get(p["species"], "gray"), 
+                alpha=0.6,
+                s=40
+            )
+
+        # 2. Plota as posições finais dos neurônios com seus rótulos assumidos
+        for i, w in enumerate(self.weights):
+            color = neuron_colors[i % len(neuron_colors)]
+            rotulo = neuron_labels.get(i, f"N{i+1}")
+            plt.scatter(
+                w[0],
+                w[1] if len(w) > 1 else 0,
+                marker="X",
+                s=250,
+                color=color,
+                edgecolors="white",
+                label=f"N{i+1} : {rotulo}",
+                zorder=5,
+            )
+
+        plt.title(f"Amostras de Teste vs Posição Final WTA (Acurácia: {acuracia:.2f}%)" if train_data else "Amostras de Teste")
+        plt.xlabel(self.features[0])
+        if len(self.features) > 1:
+            plt.ylabel(self.features[1])
+            
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys(), loc="best")
+        
+        plt.show()
+
 
 class SimpleKMeans:
 
@@ -552,17 +667,21 @@ def extract_vectors(data):
 
 
 # | ---- MAIN -- --|
-processor = DataProcessor(row_data)
+# Aqui você pode definir a proporção: 0.7 = 70% treino, 0.3 = 30% teste
+processor = DataProcessor(row_data, train_ratio=0.7)
 processor.call_functions()
 
 train_vectors = extract_vectors(processor.training_data)
 
 # WTA
-wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=1)
+wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=8)
 # Você pode trocar para wta.train_live() se quiser ver passo-por-epoca
 # wta.train()
-# wta.train_live(processor.training_data, pause=0.1)
-wta.train_live_by_sample(processor.training_data, pause=0.1)
+wta.train_live(processor.training_data, pause=0.1)
+# wta.train_live_by_sample(processor.training_data, pause=0.1)
+
+# Passa o teste
+wta.test(test_data=processor.test_data, train_data=processor.training_data)
 
 # KMeans
 kmeans = SimpleKMeans(k=3)
