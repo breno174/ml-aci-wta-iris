@@ -102,8 +102,8 @@ class DataProcessor:
             temp_group = group[:]
             random.shuffle(temp_group)
 
-            self.training_data.extend(temp_group[:40])
-            self.test_data.extend(temp_group[40:])
+            self.training_data.extend(temp_group[:35])
+            self.test_data.extend(temp_group[35:])
 
         random.shuffle(self.training_data)
         random.shuffle(self.test_data)
@@ -135,17 +135,37 @@ class DataProcessor:
 
 class Winner_take_all:
 
-    def __init__(self, data, num_neurons=4, learning_rate=0.3, epochs=100):
+    def __init__(
+        self, data, features=None, num_neurons=3, learning_rate=0.1, epochs=20
+    ):
         self.data = data
+        self.features = features if features else ["sepal_length", "petal_width"]
         self.learning_rate = learning_rate
         self.num_neurons = num_neurons
         self.epochs = epochs
-        amostras_iniciais = random.sample(self.data, self.num_neurons)
-        self.weights = [
-            [float(p["sepal_length"]), float(p["petal_width"])]
-            for p in amostras_iniciais
-        ]
+
+        centro = self._calcular_centro(self.data)
+
+        # Todos os neurônios partem exatamente juntos do centro de todas as amostras
+        self.weights = [[c for c in centro] for _ in range(self.num_neurons)]
         self.history = []
+
+    def _calcular_centro(self, data):
+        """Calcula o centro vetorial geral percorrendo as amostras."""
+        num_amostras = len(data)
+        num_features = len(self.features)
+
+        # Ponto de partida na origem (0, 0, ...)
+        soma_vetorial = [0.0] * num_features
+
+        # Itera pelo dataset calculando o somatório das amostras como vetores
+        for ponto in data:
+            for i, f in enumerate(self.features):
+                soma_vetorial[i] += float(ponto[f])
+
+        # O centro de todas as amostras é a divisão da soma vetorial pelo total de amostras
+        centro_amostras = [soma / num_amostras for soma in soma_vetorial]
+        return centro_amostras
 
     def _euclidean_distance(self, x, w):
         soma = 0
@@ -155,14 +175,18 @@ class Winner_take_all:
         return math.sqrt(soma)
 
     def _winner(self, x):
-        min_distance = float("inf")
-        winner_index = -1
-        for i, w in enumerate(self.weights):
-            distance = self._euclidean_distance(x, w)
-            if distance < min_distance:
-                min_distance = distance
-                winner_index = i
-        return winner_index
+        """Retorna o índice do neurônio vencedor.
+        Em caso de empate (distâncias iguais), sorteia aleatoriamente entre os candidatos.
+        Isso evita que apenas o neurônio 0 vença quando todos partem do mesmo ponto.
+        """
+        distancias = [self._euclidean_distance(x, w) for w in self.weights]
+        min_distance = min(distancias)
+
+        # Coleta todos os índices com a mesma distância mínima (com tolerância numérica)
+        candidatos = [
+            i for i, d in enumerate(distancias) if abs(d - min_distance) < 1e-9
+        ]
+        return random.choice(candidatos)
 
     def _update_weights(self, x, w):
         new_w = []
@@ -176,10 +200,7 @@ class Winner_take_all:
             dados_epoca = self.data[:]
             random.shuffle(dados_epoca)
             for ponto in dados_epoca:
-                vetor_entrada = [
-                    float(ponto["sepal_length"]),
-                    float(ponto["petal_width"]),
-                ]
+                vetor_entrada = [float(ponto[f]) for f in self.features]
                 vencedor_idx = self._winner(vetor_entrada)
                 self.weights[vencedor_idx] = self._update_weights(
                     vetor_entrada, self.weights[vencedor_idx]
@@ -202,51 +223,218 @@ class Winner_take_all:
         plt.ion()
         fig, ax = plt.subplots()
 
+        def draw_state(title_suffix, prev_weights=None):
+            ax.clear()
+
+            # Plota o dataset
+            for p in training_data:
+                ax.scatter(
+                    float(p[self.features[0]]),
+                    float(p[self.features[1]]) if len(self.features) > 1 else 0,
+                    color=colors_data.get(p["species"], "black"),
+                    alpha=0.3,
+                    s=20,
+                )
+
+            # Plota a posição inicial (se houver prev_weights) com linhas indicando movimento
+            if prev_weights:
+                for i, w_prev in enumerate(prev_weights):
+                    color = neuron_colors[i % len(neuron_colors)]
+                    # Posição inicial (círculo vazado)
+                    ax.scatter(
+                        w_prev[0],
+                        w_prev[1] if len(w_prev) > 1 else 0,
+                        marker="o",
+                        facecolors="none",
+                        edgecolors=color,
+                        s=150,
+                        linewidth=2,
+                        zorder=4,
+                        label=f"Início N{i+1}" if i < len(neuron_colors) else "",
+                    )
+
+                    # Linha conectando início ao fim
+                    w_atual = self.weights[i]
+                    ax.plot(
+                        [w_prev[0], w_atual[0]],
+                        [
+                            w_prev[1] if len(w_prev) > 1 else 0,
+                            w_atual[1] if len(w_atual) > 1 else 0,
+                        ],
+                        color=color,
+                        linestyle="--",
+                        alpha=0.5,
+                        zorder=3,
+                    )
+
+            # Plota posição atual (final ou de partida se não tiver prev_weights)
+            for i, w in enumerate(self.weights):
+                color = neuron_colors[i % len(neuron_colors)]
+                ax.scatter(
+                    w[0],
+                    w[1] if len(w) > 1 else 0,
+                    marker="X",
+                    s=200,
+                    color=color,
+                    label=f"N{i+1}" if prev_weights is None else f"Fim N{i+1}",
+                    zorder=5,
+                )
+
+            ax.set_title(f"WTA — {title_suffix}")
+            ax.set_xlabel(self.features[0])
+            if len(self.features) > 1:
+                ax.set_ylabel(self.features[1])
+
+            # Ajuste de legendas sem duplicidades
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), loc="upper left")
+            plt.pause(pause)
+
+        # Histórico original do tempo 0
+        self.history.append([w[:] for w in self.weights])
+
         for epoch in range(self.epochs):
+            # 1) Mostra gráfico ANTES do treinamento desta época
+            pesos_iniciais_epoca = [w[:] for w in self.weights]
+            draw_state(f"Início da Época {epoch + 1}/{self.epochs}")
+
+            # 2) Treinamento da época
             dados_epoca = self.data[:]
             random.shuffle(dados_epoca)
             for ponto in dados_epoca:
-                vetor_entrada = [
-                    float(ponto["sepal_length"]),
-                    float(ponto["petal_width"]),
-                ]
+                vetor_entrada = [float(ponto[f]) for f in self.features]
                 vencedor_idx = self._winner(vetor_entrada)
                 self.weights[vencedor_idx] = self._update_weights(
                     vetor_entrada, self.weights[vencedor_idx]
                 )
             self.history.append([w[:] for w in self.weights])
 
-            # --- Atualiza o gráfico ---
+            # 3) Mostra gráfico DEPOIS do treinamento da época (mostrando rastro de movimento)
+            draw_state(
+                f"Fim da Época {epoch + 1}/{self.epochs}",
+                prev_weights=pesos_iniciais_epoca,
+            )
+
+        plt.ioff()
+        plt.show()
+
+    def train_live_by_sample(self, training_data, pause=0.1):
+        """
+        Treina o WTA exibindo o movimento a cada única interação de amostra.
+        pause: tempo (em segundos) de pausa. Reduza se quiser mais rápido.
+        """
+        colors_data = {
+            "Iris-setosa": "red",
+            "Iris-versicolor": "green",
+            "Iris-virginica": "blue",
+        }
+        neuron_colors = ["black", "orange", "purple", "cyan"]
+
+        plt.ion()
+        fig, ax = plt.subplots()
+
+        def draw_state(title_suffix, prev_weights=None, current_sample=None):
             ax.clear()
 
-            # Plota o dataset
+            # Plota o dataset (amostras de fundo mais transparentes)
             for p in training_data:
                 ax.scatter(
-                    float(p["sepal_length"]),
-                    float(p["petal_width"]),
-                    color=colors_data[p["species"]],
-                    alpha=0.3,
+                    float(p[self.features[0]]),
+                    float(p[self.features[1]]) if len(self.features) > 1 else 0,
+                    color=colors_data.get(p["species"], "black"),
+                    alpha=0.1,  # Reduzido pra destacar a amostra atual
                     s=20,
                 )
 
-            # Plota posição atual dos neurônios
+            # Destaca a amostra sendo avaliada agora
+            if current_sample:
+                ax.scatter(
+                    current_sample[0],
+                    current_sample[1] if len(current_sample) > 1 else 0,
+                    marker="*",
+                    color="magenta",
+                    s=300,
+                    edgecolors="black",
+                    zorder=6,
+                    label="Amostra da Vez",
+                )
+
+            # Plota a posição inicial desta amostra se houver
+            if prev_weights:
+                for i, w_prev in enumerate(prev_weights):
+                    color = neuron_colors[i % len(neuron_colors)]
+                    ax.scatter(
+                        w_prev[0],
+                        w_prev[1] if len(w_prev) > 1 else 0,
+                        marker="o",
+                        facecolors="none",
+                        edgecolors=color,
+                        s=150,
+                        linewidth=2,
+                        zorder=4,
+                        label=f"Origem N{i+1}" if i < len(neuron_colors) else "",
+                    )
+
+                    w_atual = self.weights[i]
+                    ax.plot(
+                        [w_prev[0], w_atual[0]],
+                        [
+                            w_prev[1] if len(w_prev) > 1 else 0,
+                            w_atual[1] if len(w_atual) > 1 else 0,
+                        ],
+                        color=color,
+                        linestyle="--",
+                        alpha=0.5,
+                        zorder=3,
+                    )
+
+            # Plota posição final
             for i, w in enumerate(self.weights):
                 color = neuron_colors[i % len(neuron_colors)]
                 ax.scatter(
                     w[0],
-                    w[1],
+                    w[1] if len(w) > 1 else 0,
                     marker="X",
                     s=200,
                     color=color,
-                    label=f"Neurônio {i+1}",
+                    label=f"N{i+1}",
                     zorder=5,
                 )
 
-            ax.set_title(f"WTA — Época {epoch + 1}/{self.epochs}")
-            ax.set_xlabel("Sepal Length")
-            ax.set_ylabel("Petal Width")
-            ax.legend(loc="upper left")
+            ax.set_title(f"WTA — {title_suffix}")
+            ax.set_xlabel(self.features[0])
+            if len(self.features) > 1:
+                ax.set_ylabel(self.features[1])
+
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), loc="upper left")
             plt.pause(pause)
+
+        self.history.append([w[:] for w in self.weights])
+        draw_state(f"Início Global do Treino")
+
+        for epoch in range(self.epochs):
+            dados_epoca = self.data[:]
+            random.shuffle(dados_epoca)
+
+            for iter_idx, ponto in enumerate(dados_epoca):
+                pesos_antes = [w[:] for w in self.weights]
+                vetor_entrada = [float(ponto[f]) for f in self.features]
+
+                vencedor_idx = self._winner(vetor_entrada)
+                self.weights[vencedor_idx] = self._update_weights(
+                    vetor_entrada, self.weights[vencedor_idx]
+                )
+
+                draw_state(
+                    f"Época {epoch + 1} | Amostra {iter_idx + 1}/{len(dados_epoca)} | N{vencedor_idx+1} Venceu!",
+                    prev_weights=pesos_antes,
+                    current_sample=vetor_entrada,
+                )
+
+            self.history.append([w[:] for w in self.weights])
 
         plt.ioff()
         plt.show()
@@ -370,9 +558,11 @@ processor.call_functions()
 train_vectors = extract_vectors(processor.training_data)
 
 # WTA
-wta = Winner_take_all(processor.training_data, num_neurons=3)
+wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=1)
+# Você pode trocar para wta.train_live() se quiser ver passo-por-epoca
 # wta.train()
-wta.train_live(processor.training_data, pause=0.1)
+# wta.train_live(processor.training_data, pause=0.1)
+wta.train_live_by_sample(processor.training_data, pause=0.1)
 
 # KMeans
 kmeans = SimpleKMeans(k=3)
