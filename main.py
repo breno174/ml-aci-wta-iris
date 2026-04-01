@@ -134,9 +134,11 @@ class DataProcessor:
         self.save_data_partition(self.data)
         self.get_knowledge_class()
         self.split_data()
-        
+
         # Informativo no terminal
-        print(f">> Dataset processado: {len(self.training_data)} amostras para Treino e {len(self.test_data)} para Teste.")
+        print(
+            f">> Dataset processado: {len(self.training_data)} amostras para Treino e {len(self.test_data)} para Teste."
+        )
 
 
 class Winner_take_all:
@@ -526,10 +528,7 @@ class Winner_take_all:
             x = float(p[self.features[0]])
             y = float(p[self.features[1]]) if len(self.features) > 1 else 0
             plt.scatter(
-                x, y, 
-                color=colors_data.get(p["species"], "gray"), 
-                alpha=0.6,
-                s=40
+                x, y, color=colors_data.get(p["species"], "gray"), alpha=0.6, s=40
             )
 
         # 2. Plota as posições finais dos neurônios com seus rótulos assumidos
@@ -547,15 +546,19 @@ class Winner_take_all:
                 zorder=5,
             )
 
-        plt.title(f"Amostras de Teste vs Posição Final WTA (Acurácia: {acuracia:.2f}%)" if train_data else "Amostras de Teste")
+        plt.title(
+            f"Amostras de Teste vs Posição Final WTA (Acurácia: {acuracia:.2f}%)"
+            if train_data
+            else "Amostras de Teste"
+        )
         plt.xlabel(self.features[0])
         if len(self.features) > 1:
             plt.ylabel(self.features[1])
-            
+
         handles, labels = plt.gca().get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
         plt.legend(by_label.values(), by_label.keys(), loc="best")
-        
+
         plt.show()
 
 
@@ -666,27 +669,28 @@ def extract_vectors(data):
     return vectors
 
 
-# | ---- MAIN -- --|
-# Aqui você pode definir a proporção: 0.7 = 70% treino, 0.3 = 30% teste
-processor = DataProcessor(row_data, train_ratio=0.7)
-processor.call_functions()
+if __name__ == "__main__":
+    # | ---- MAIN -- --|
+    # Aqui você pode definir a proporção: 0.7 = 70% treino, 0.3 = 30% teste
+    processor = DataProcessor(row_data, train_ratio=0.7)
+    processor.call_functions()
 
-train_vectors = extract_vectors(processor.training_data)
+    train_vectors = extract_vectors(processor.training_data)
 
-# WTA
-wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=8)
-# Você pode trocar para wta.train_live() se quiser ver passo-por-epoca
-# wta.train()
-wta.train_live(processor.training_data, pause=0.1)
-# wta.train_live_by_sample(processor.training_data, pause=0.1)
+    # WTA
+    wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=8)
+    # Você pode trocar para wta.train_live() se quiser ver passo-por-epoca
+    # wta.train()
+    wta.train_live(processor.training_data, pause=0.1)
+    # wta.train_live_by_sample(processor.training_data, pause=0.1)
 
-# Passa o teste
-wta.test(test_data=processor.test_data, train_data=processor.training_data)
+    # Passa o teste
+    wta.test(test_data=processor.test_data, train_data=processor.training_data)
 
-# KMeans
-kmeans = SimpleKMeans(k=3)
-kmeans.fit(train_vectors)
+    # KMeans
+    kmeans = SimpleKMeans(k=3)
+    kmeans.fit(train_vectors)
 
-plot_wta_movement(processor, wta)
+    plot_wta_movement(processor, wta)
 
-plot_comparison(processor, wta, kmeans)
+    plot_comparison(processor, wta, kmeans)
