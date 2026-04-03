@@ -1074,7 +1074,7 @@ if __name__ == "__main__":
     train_vectors = extract_vectors(processor.training_data)
 
     # WTA
-    wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=8)
+    wta = Winner_take_all(processor.training_data, num_neurons=3, epochs=12)
     # Você pode trocar para wta.train_live() se quiser ver passo-por-epoca
     # wta.train()
     wta.train_live(processor.training_data, pause=0.1)
