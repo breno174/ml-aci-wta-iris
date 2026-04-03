@@ -300,37 +300,59 @@ class Winner_take_all:
             decay.append(dr)
         return decay
 
-    def avaliar_termometro_qe(self, qe_atual, tolerancia=1e-6):
+    def avaliar_termometro_qe(self, qe_atual, paciencia_decaimento=5, tolerancia_convergencia=1e-6):
         """
         O QE serve como nosso 'Termômetro' do treinamento para avaliar a saúde:
 
-        Critério de Parada: Compara o QE da época atual com a anterior.
-        Se a diferença (a queda do erro) for menor que a tolerância (10^-6),
-        significa que o algoritmo convergiu e os neurônios não se movem mais.
-        Nesse cenário, sinalizamos a interrupção precoce (Early Stopping).
+        1) Decaimento Baseado no Desempenho (Adaptativo):
+           Monitoramos o erro QE. A taxa de aprendizado SÓ diminui quando 
+           o erro para de cair. Se o modelo fica preso em uma 'falsa estabilidade' 
+           (estagnado por 'paciencia' épocas consecutivas), cortamos a taxa de
+           aprendizado pela metade (Ajuste Fino).
 
-        Retorna:
-          True se o treinamento deve ser interrompido imediatamente.
-          False caso contrário.
+        2) Critério de Parada (Early Stopping):
+           Compara o QE da época atual com a anterior.
+           Se a diferença (a queda do erro) for de fato menor que a tolerância (10^-6),
+           significa que o algoritmo finalizou e convergiu, interrompendo precocemente.
         """
+        if not hasattr(self, "melhor_qe_historico"):
+            self.melhor_qe_historico = qe_atual
+            self.epocas_estagnadas = 0
+
         # --- Critério de Parada (Convergência Total) ---
         if len(self.quantization_errors) >= 2:
             qe_anterior = self.quantization_errors[-2]
             diff_qe = abs(qe_anterior - qe_atual)
-            if diff_qe < tolerancia:
+            if diff_qe < tolerancia_convergencia:
                 print(f"\n[WTA Termômetro] Interrompendo treinamento precoce!")
                 print(
-                    f"      Motivo: Convergência alcançada (ΔQE = {diff_qe:.2e} < {tolerancia})."
+                    f"      Motivo: Convergência alcançada (ΔQE = {diff_qe:.2e} < {tolerancia_convergencia})."
                 )
+                # Salva no histórico a taxa deste ponto final
+                self.learning_rates_history.append(self.learning_rate)
                 return True
 
+        # --- Decaimento Baseado no Desempenho ---
+        tolerancia_melhora = 1e-4
+        if qe_atual < (self.melhor_qe_historico - tolerancia_melhora):
+            # Erro continua caindo bem: reseta o contador, mantém a velocidade correndo!
+            self.melhor_qe_historico = qe_atual
+            self.epocas_estagnadas = 0
+        else:
+            # Erro parou de cair (estagnou)
+            self.epocas_estagnadas += 1
+
+        if self.epocas_estagnadas >= paciencia_decaimento:
+            self.learning_rate *= 0.5
+            print(f"\n[WTA Termômetro] QE estagnou por {paciencia_decaimento} épocas.")
+            print(f"      Ajuste Fino: Taxa de aprendizado foi reduzida pela metade ({self.learning_rate:.6f})")
+            self.epocas_estagnadas = 0
+            
+        self.learning_rates_history.append(self.learning_rate)
         return False
 
     def train(self):
         for epoch in range(self.epochs):
-            # --- Decaimento padrão baseado no tempo (Linear) ---
-            self.learning_rate = self.initial_lr * (1 - epoch / self.epochs)
-            self.learning_rates_history.append(self.learning_rate)
 
             dados_epoca = self.data[:]
             random.shuffle(dados_epoca)
@@ -349,8 +371,8 @@ class Winner_take_all:
             self.quantization_errors.append(qe)
             self.variance_rates.append(vr)
 
-            # --- AQUI: Avalia o Termômetro do QE apenas para Early Stopping ---
-            if self.avaliar_termometro_qe(qe, tolerancia=1e-6):
+            # --- Avalia o Termômetro do QE (Decaimento e Parada) ---
+            if self.avaliar_termometro_qe(qe, paciencia_decaimento=5, tolerancia_convergencia=1e-6):
                 break
 
         # Calcula taxa de decaimento após todas as épocas
@@ -443,10 +465,6 @@ class Winner_take_all:
         self.history.append([w[:] for w in self.weights])
 
         for epoch in range(self.epochs):
-            # --- Decaimento padrão baseado no tempo (Linear) ---
-            self.learning_rate = self.initial_lr * (1 - epoch / self.epochs)
-            self.learning_rates_history.append(self.learning_rate)
-
             # 1) Mostra gráfico ANTES do treinamento desta época
             pesos_iniciais_epoca = [w[:] for w in self.weights]
             draw_state(f"Início da Época {epoch + 1}/{self.epochs}")
@@ -474,8 +492,8 @@ class Winner_take_all:
                 prev_weights=pesos_iniciais_epoca,
             )
 
-            # --- Avalia o Termômetro do QE apenas para Early Stopping ---
-            if self.avaliar_termometro_qe(qe, tolerancia=1e-6):
+            # --- Avalia o Termômetro do QE (Decaimento e Parada) ---
+            if self.avaliar_termometro_qe(qe, paciencia_decaimento=5, tolerancia_convergencia=1e-6):
                 break
 
         self.decay_rates = self.calcular_taxa_decaimento()
@@ -580,9 +598,6 @@ class Winner_take_all:
         draw_state(f"Início Global do Treino")
 
         for epoch in range(self.epochs):
-            # --- Decaimento padrão baseado no tempo (Linear) ---
-            self.learning_rate = self.initial_lr * (1 - epoch / self.epochs)
-            self.learning_rates_history.append(self.learning_rate)
 
             dados_epoca = self.data[:]
             random.shuffle(dados_epoca)
@@ -610,8 +625,8 @@ class Winner_take_all:
             self.quantization_errors.append(qe)
             self.variance_rates.append(vr)
 
-            # --- Avalia o Termômetro do QE apenas para Early Stopping ---
-            if self.avaliar_termometro_qe(qe, tolerancia=1e-6):
+            # --- Avalia o Termômetro do QE (Decaimento e Parada) ---
+            if self.avaliar_termometro_qe(qe, paciencia_decaimento=5, tolerancia_convergencia=1e-6):
                 break
 
         self.decay_rates = self.calcular_taxa_decaimento()
