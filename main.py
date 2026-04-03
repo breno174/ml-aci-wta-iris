@@ -157,9 +157,12 @@ class Winner_take_all:
         self.history = []
 
         # Histórico das métricas por época
-        self.quantization_errors = []   # QE por época
-        self.variance_rates = []        # VR por época
-        self.decay_rates = []           # DR entre épocas consecutivas
+        self.quantization_errors = []  # QE por época
+        self.variance_rates = []  # VR por época
+        self.decay_rates = []  # DR entre épocas consecutivas
+        self.initial_lr = learning_rate
+        self.learning_rates_history = []  # Histórico LR
+        self.initial_qe = None  # Referência inicial para decaimento
 
     def _calcular_centro(self, data):
         """Calcula o centro vetorial geral percorrendo as amostras."""
@@ -209,15 +212,15 @@ class Winner_take_all:
     def calcular_erros(self, data):
         """
         Calcula os dois erros usando um único loop pelas amostras:
-        
+
           1. Erro de Quantização (QE): Distância Euclidiana média
              Mede a distância média das amostras ao seu neurônio vencedor.
              Fórmula: QE = (1/N) * Σ || x_i - w_vencedor(x_i) ||
-             
+
           2. Erro Quadrático (EQ_i): Distância Quadrática por amostra
              Mede a distância quadrática de cada amostra i ao seu vizinho vencedor k.
              Fórmula: EQ_i = || x_i - w_vencedor(x_i) ||² = Σ_j (x_ij - w_kj)²
-             
+
         Retorna:
           qe_medio (float): O erro de quantização (QE) da época.
           resultados_eq_amostras (list[dict]): Lista de erros quadráticos individuais (EQ_i).
@@ -237,13 +240,15 @@ class Winner_take_all:
 
             # --- AQUI: Calcula Erro Quadrático Individual (Distância Quadrada) ---
             eq = sum((vetor[j] - w[j]) ** 2 for j in range(len(vetor)))
-            resultados_eq_amostras.append({
-                "indice": idx,
-                "vetor": vetor,
-                "vencedor_idx": vencedor_idx,
-                "eq": eq,
-                "species": ponto.get("species", "N/A"),
-            })
+            resultados_eq_amostras.append(
+                {
+                    "indice": idx,
+                    "vetor": vetor,
+                    "vencedor_idx": vencedor_idx,
+                    "eq": eq,
+                    "species": ponto.get("species", "N/A"),
+                }
+            )
 
         qe_medio = total_dist_euclidiana / n if n > 0 else 0.0
 
@@ -295,8 +300,38 @@ class Winner_take_all:
             decay.append(dr)
         return decay
 
+    def avaliar_termometro_qe(self, qe_atual, tolerancia=1e-6):
+        """
+        O QE serve como nosso 'Termômetro' do treinamento para avaliar a saúde:
+
+        Critério de Parada: Compara o QE da época atual com a anterior.
+        Se a diferença (a queda do erro) for menor que a tolerância (10^-6),
+        significa que o algoritmo convergiu e os neurônios não se movem mais.
+        Nesse cenário, sinalizamos a interrupção precoce (Early Stopping).
+
+        Retorna:
+          True se o treinamento deve ser interrompido imediatamente.
+          False caso contrário.
+        """
+        # --- Critério de Parada (Convergência Total) ---
+        if len(self.quantization_errors) >= 2:
+            qe_anterior = self.quantization_errors[-2]
+            diff_qe = abs(qe_anterior - qe_atual)
+            if diff_qe < tolerancia:
+                print(f"\n[WTA Termômetro] Interrompendo treinamento precoce!")
+                print(
+                    f"      Motivo: Convergência alcançada (ΔQE = {diff_qe:.2e} < {tolerancia})."
+                )
+                return True
+
+        return False
+
     def train(self):
         for epoch in range(self.epochs):
+            # --- Decaimento padrão baseado no tempo (Linear) ---
+            self.learning_rate = self.initial_lr * (1 - epoch / self.epochs)
+            self.learning_rates_history.append(self.learning_rate)
+
             dados_epoca = self.data[:]
             random.shuffle(dados_epoca)
             for ponto in dados_epoca:
@@ -313,6 +348,10 @@ class Winner_take_all:
             vr = self.calcular_taxa_variancia()
             self.quantization_errors.append(qe)
             self.variance_rates.append(vr)
+
+            # --- AQUI: Avalia o Termômetro do QE apenas para Early Stopping ---
+            if self.avaliar_termometro_qe(qe, tolerancia=1e-6):
+                break
 
         # Calcula taxa de decaimento após todas as épocas
         self.decay_rates = self.calcular_taxa_decaimento()
@@ -404,6 +443,10 @@ class Winner_take_all:
         self.history.append([w[:] for w in self.weights])
 
         for epoch in range(self.epochs):
+            # --- Decaimento padrão baseado no tempo (Linear) ---
+            self.learning_rate = self.initial_lr * (1 - epoch / self.epochs)
+            self.learning_rates_history.append(self.learning_rate)
+
             # 1) Mostra gráfico ANTES do treinamento desta época
             pesos_iniciais_epoca = [w[:] for w in self.weights]
             draw_state(f"Início da Época {epoch + 1}/{self.epochs}")
@@ -419,11 +462,23 @@ class Winner_take_all:
                 )
             self.history.append([w[:] for w in self.weights])
 
+            # Registra as métricas
+            qe, _ = self.calcular_erros(self.data)
+            vr = self.calcular_taxa_variancia()
+            self.quantization_errors.append(qe)
+            self.variance_rates.append(vr)
+
             # 3) Mostra gráfico DEPOIS do treinamento da época (mostrando rastro de movimento)
             draw_state(
                 f"Fim da Época {epoch + 1}/{self.epochs}",
                 prev_weights=pesos_iniciais_epoca,
             )
+
+            # --- Avalia o Termômetro do QE apenas para Early Stopping ---
+            if self.avaliar_termometro_qe(qe, tolerancia=1e-6):
+                break
+
+        self.decay_rates = self.calcular_taxa_decaimento()
 
         plt.ioff()
         plt.show()
@@ -525,6 +580,10 @@ class Winner_take_all:
         draw_state(f"Início Global do Treino")
 
         for epoch in range(self.epochs):
+            # --- Decaimento padrão baseado no tempo (Linear) ---
+            self.learning_rate = self.initial_lr * (1 - epoch / self.epochs)
+            self.learning_rates_history.append(self.learning_rate)
+
             dados_epoca = self.data[:]
             random.shuffle(dados_epoca)
 
@@ -545,6 +604,18 @@ class Winner_take_all:
 
             self.history.append([w[:] for w in self.weights])
 
+            # Registra as métricas
+            qe, _ = self.calcular_erros(self.data)
+            vr = self.calcular_taxa_variancia()
+            self.quantization_errors.append(qe)
+            self.variance_rates.append(vr)
+
+            # --- Avalia o Termômetro do QE apenas para Early Stopping ---
+            if self.avaliar_termometro_qe(qe, tolerancia=1e-6):
+                break
+
+        self.decay_rates = self.calcular_taxa_decaimento()
+
         plt.ioff()
         plt.show()
 
@@ -560,7 +631,9 @@ class Winner_take_all:
           3. Taxa de Decaimento entre épocas consecutivas
         """
         if not self.quantization_errors:
-            print("[AVISO] Nenhuma métrica registrada. Execute train() antes de plotar.")
+            print(
+                "[AVISO] Nenhuma métrica registrada. Execute train() antes de plotar."
+            )
             return
 
         epocas_qe_vr = list(range(1, len(self.quantization_errors) + 1))
@@ -573,8 +646,16 @@ class Winner_take_all:
 
         # --- Gráfico 1: Erro de Quantização ---
         ax1 = axes[0]
-        ax1.plot(epocas_qe_vr, self.quantization_errors, marker="o", color="steelblue", linewidth=2)
-        ax1.fill_between(epocas_qe_vr, self.quantization_errors, alpha=0.15, color="steelblue")
+        ax1.plot(
+            epocas_qe_vr,
+            self.quantization_errors,
+            marker="o",
+            color="steelblue",
+            linewidth=2,
+        )
+        ax1.fill_between(
+            epocas_qe_vr, self.quantization_errors, alpha=0.15, color="steelblue"
+        )
         ax1.set_title("Erro de Quantização (QE)", fontsize=12)
         ax1.set_xlabel("Época")
         ax1.set_ylabel("QE médio")
@@ -583,8 +664,16 @@ class Winner_take_all:
 
         # --- Gráfico 2: Taxa de Variância ---
         ax2 = axes[1]
-        ax2.plot(epocas_qe_vr, self.variance_rates, marker="s", color="darkorange", linewidth=2)
-        ax2.fill_between(epocas_qe_vr, self.variance_rates, alpha=0.15, color="darkorange")
+        ax2.plot(
+            epocas_qe_vr,
+            self.variance_rates,
+            marker="s",
+            color="darkorange",
+            linewidth=2,
+        )
+        ax2.fill_between(
+            epocas_qe_vr, self.variance_rates, alpha=0.15, color="darkorange"
+        )
         ax2.set_title("Taxa de Variância (VR)", fontsize=12)
         ax2.set_xlabel("Época")
         ax2.set_ylabel("Variância média")
@@ -594,8 +683,17 @@ class Winner_take_all:
         # --- Gráfico 3: Taxa de Decaimento ---
         ax3 = axes[2]
         if self.decay_rates:
-            cores_barras = ["green" if dr >= 0 else "crimson" for dr in self.decay_rates]
-            ax3.bar(epocas_dr, self.decay_rates, color=cores_barras, alpha=0.75, edgecolor="black", linewidth=0.7)
+            cores_barras = [
+                "green" if dr >= 0 else "crimson" for dr in self.decay_rates
+            ]
+            ax3.bar(
+                epocas_dr,
+                self.decay_rates,
+                color=cores_barras,
+                alpha=0.75,
+                edgecolor="black",
+                linewidth=0.7,
+            )
             ax3.axhline(0, color="black", linewidth=0.8, linestyle="-")
             ax3.set_title("Taxa de Decaimento (DR)", fontsize=12)
             ax3.set_xlabel("Época")
@@ -603,8 +701,15 @@ class Winner_take_all:
             ax3.grid(True, linestyle="--", alpha=0.5, axis="y")
             ax3.set_xticks(epocas_dr)
         else:
-            ax3.text(0.5, 0.5, "Épocas insuficientes\npara calcular DR",
-                     ha="center", va="center", transform=ax3.transAxes, fontsize=11)
+            ax3.text(
+                0.5,
+                0.5,
+                "Épocas insuficientes\npara calcular DR",
+                ha="center",
+                va="center",
+                transform=ax3.transAxes,
+                fontsize=11,
+            )
             ax3.set_title("Taxa de Decaimento (DR)", fontsize=12)
 
         plt.tight_layout()
@@ -620,10 +725,10 @@ class Winner_take_all:
         """
         _, resultados = self.calcular_erros(data)
 
-        indices   = [r["indice"]       for r in resultados]
-        erros_eq  = [r["eq"]           for r in resultados]
+        indices = [r["indice"] for r in resultados]
+        erros_eq = [r["eq"] for r in resultados]
         vencedores = [r["vencedor_idx"] for r in resultados]
-        especies  = [r["species"]      for r in resultados]
+        especies = [r["species"] for r in resultados]
 
         mse = sum(erros_eq) / len(erros_eq) if erros_eq else 0.0
         sse = sum(erros_eq)
@@ -637,7 +742,9 @@ class Winner_take_all:
         print("=" * 55 + "\n")
 
         neuron_colors = ["steelblue", "darkorange", "purple", "teal", "crimson"]
-        titulo_base = f"Erro Quadrático por Amostra{' | ' + titulo_extra if titulo_extra else ''}"
+        titulo_base = (
+            f"Erro Quadrático por Amostra{' | ' + titulo_extra if titulo_extra else ''}"
+        )
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         fig.suptitle(titulo_base, fontsize=13, fontweight="bold")
@@ -646,13 +753,22 @@ class Winner_take_all:
         ax1 = axes[0]
         for k in range(self.num_neurons):
             idx_k = [indices[i] for i in range(len(resultados)) if vencedores[i] == k]
-            eq_k  = [erros_eq[i] for i in range(len(resultados)) if vencedores[i] == k]
+            eq_k = [erros_eq[i] for i in range(len(resultados)) if vencedores[i] == k]
             color = neuron_colors[k % len(neuron_colors)]
-            ax1.scatter(idx_k, eq_k, color=color, alpha=0.7, s=30,
-                        label=f"Neurônio {k+1}", edgecolors="white", linewidth=0.3)
+            ax1.scatter(
+                idx_k,
+                eq_k,
+                color=color,
+                alpha=0.7,
+                s=30,
+                label=f"Neurônio {k+1}",
+                edgecolors="white",
+                linewidth=0.3,
+            )
 
-        ax1.axhline(mse, color="red", linestyle="--", linewidth=1.5,
-                    label=f"MSE = {mse:.4f}")
+        ax1.axhline(
+            mse, color="red", linestyle="--", linewidth=1.5, label=f"MSE = {mse:.4f}"
+        )
         ax1.set_title("EQ_i por índice de amostra", fontsize=11)
         ax1.set_xlabel("Índice da amostra")
         ax1.set_ylabel("Erro Quadrático (EQ_i)")
@@ -661,15 +777,72 @@ class Winner_take_all:
 
         # --- Painel 2: Histograma da distribuição dos EQ ---
         ax2 = axes[1]
-        ax2.hist(erros_eq, bins=20, color="slategray", edgecolor="white",
-                 alpha=0.85, linewidth=0.6)
-        ax2.axvline(mse, color="red", linestyle="--", linewidth=1.5,
-                    label=f"MSE = {mse:.4f}")
+        ax2.hist(
+            erros_eq,
+            bins=20,
+            color="slategray",
+            edgecolor="white",
+            alpha=0.85,
+            linewidth=0.6,
+        )
+        ax2.axvline(
+            mse, color="red", linestyle="--", linewidth=1.5, label=f"MSE = {mse:.4f}"
+        )
         ax2.set_title("Distribuição dos EQ_i", fontsize=11)
         ax2.set_xlabel("Erro Quadrático (EQ_i)")
         ax2.set_ylabel("Frequência")
         ax2.legend(fontsize=9)
         ax2.grid(True, linestyle="--", alpha=0.4)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_curva_aprendizado(self, titulo_extra=""):
+        """
+        Plota as curvas de aprendizado:
+        1. Decaimento da Taxa de Aprendizado ao longo das épocas.
+        2. Queda do Erro de Quantização (QE) ao longo das épocas.
+        """
+        if not self.quantization_errors:
+            print("[AVISO] Nenhuma métrica registrada. Treine o modelo primeiro.")
+            return
+
+        epocas = list(range(1, len(self.quantization_errors) + 1))
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        titulo_base = (
+            f"Curvas de Aprendizado{' | ' + titulo_extra if titulo_extra else ''}"
+        )
+        fig.suptitle(titulo_base, fontsize=14, fontweight="bold")
+
+        # --- Gráfico 1: Curva de Learning Rate ---
+        ax1 = axes[0]
+        # Garantir que plotamos apenas o número equivalente de épocas rodadas (pode haver early stopping)
+        lrs = self.learning_rates_history[: len(epocas)]
+        ax1.plot(epocas, lrs, marker="v", color="purple", linewidth=2.5)
+        ax1.set_title("Taxa de Aprendizado (Decaimento Linear)", fontsize=12)
+        ax1.set_xlabel("Época")
+        ax1.set_ylabel("Learning Rate")
+        ax1.grid(True, linestyle="--", alpha=0.5)
+        ax1.set_xticks(epocas)
+
+        # --- Gráfico 2: Curva de Erro de Quantização (Convergência) ---
+        ax2 = axes[1]
+        ax2.plot(
+            epocas,
+            self.quantization_errors,
+            marker="o",
+            color="steelblue",
+            linewidth=2.5,
+        )
+        ax2.set_title("Erro de Quantização (Saúde do Treino)", fontsize=12)
+        ax2.set_xlabel("Época")
+        ax2.set_ylabel("QE (Erro Médio)")
+        ax2.fill_between(
+            epocas, self.quantization_errors, alpha=0.15, color="steelblue"
+        )
+        ax2.grid(True, linestyle="--", alpha=0.5)
+        ax2.set_xticks(epocas)
 
         plt.tight_layout()
         plt.show()
@@ -910,13 +1083,15 @@ if __name__ == "__main__":
     # Plota métricas de convergência (QE, VR, DR)
     wta.plot_metricas(titulo_extra="2D (sepal_length × petal_width)")
 
+    # Plota curvas de aprendizado (Learning Rate e QE)
+    wta.plot_curva_aprendizado(titulo_extra="2D (Learning Rate e QE)")
+
     # Passa o teste
     wta.test(test_data=processor.test_data, train_data=processor.training_data)
 
     # Erro quadrático individual de cada amostra de treino
     wta.plot_erro_quadratico(
-        processor.training_data,
-        titulo_extra="2D (sepal_length × petal_width)"
+        processor.training_data, titulo_extra="2D (sepal_length × petal_width)"
     )
 
     # KMeans

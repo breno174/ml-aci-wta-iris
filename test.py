@@ -150,7 +150,7 @@ def main():
             row_data.append(json.loads(json.dumps(row)))
 
     # 2. Pré-processamento via DataProcessor
-    processor = DataProcessor(row_data, train_ratio=0.7)
+    processor = DataProcessor(row_data, train_ratio=0.75)
     processor.call_functions()
 
     # 3. 4 features
@@ -162,14 +162,19 @@ def main():
         processor.training_data,
         features=features_4,
         num_neurons=3,
-        epochs=20,
-        learning_rate=0.1,
+        epochs=50,
+        learning_rate=0.08,
     )
     print(f">> Treinando WTA_4D por {wta.epochs} épocas...\n")
     wta.train()
 
     # Plota métricas de convergência (QE, VR, DR) para o modelo 4D
-    wta.plot_metricas(titulo_extra="4D (sepal_length, sepal_width, petal_length, petal_width)")
+    wta.plot_metricas(
+        titulo_extra="4D (sepal_length, sepal_width, petal_length, petal_width)"
+    )
+
+    # Plota curvas de aprendizado
+    wta.plot_curva_aprendizado(titulo_extra="4D (Learning Rate e QE)")
 
     # 5. Avaliar modelo e exibir logs
     acuracia = wta.test(
@@ -180,7 +185,7 @@ def main():
     # Erro quadrático individual de cada amostra de treino (4D)
     wta.plot_erro_quadratico(
         processor.training_data,
-        titulo_extra="4D (sepal_length, sepal_width, petal_length, petal_width)"
+        titulo_extra="4D (sepal_length, sepal_width, petal_length, petal_width)",
     )
 
     # 6. K-Means para comparação — treina sobre os vetores 4D de treino
