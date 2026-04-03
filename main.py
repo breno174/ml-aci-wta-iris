@@ -48,10 +48,8 @@ def update_winning_neuron(input_vector, winning_weights, learning_rate=0.1):
     Atualiza APENAS os pesos do neurônio vencedor (WTA puro, sem vizinhança).
     Fórmula: W(t+1) = W(t) + alpha * (X - W(t))
     """
-    for i in range(len(winning_weights)):
-        winning_weights[i] = winning_weights[i] + learning_rate * (
-            input_vector[i] - winning_weights[i]
-        )
+    for a, b in zip(input_vector, winning_weights):
+        b += learning_rate * (a - b)
     return winning_weights
 
 
@@ -158,6 +156,11 @@ class Winner_take_all:
         self.weights = [[c for c in centro] for _ in range(self.num_neurons)]
         self.history = []
 
+        # Histórico das métricas por época
+        self.quantization_errors = []   # QE por época
+        self.variance_rates = []        # VR por época
+        self.decay_rates = []           # DR entre épocas consecutivas
+
     def _calcular_centro(self, data):
         """Calcula o centro vetorial geral percorrendo as amostras."""
         num_amostras = len(data)
@@ -177,8 +180,8 @@ class Winner_take_all:
 
     def _euclidean_distance(self, x, w):
         soma = 0
-        for j in range(len(x)):
-            diferenca = x[j] - w[j]
+        for a, b in zip(x, w):
+            diferenca = a - b
             soma += diferenca**2
         return math.sqrt(soma)
 
@@ -203,6 +206,95 @@ class Winner_take_all:
             new_w.append(updated)
         return new_w
 
+    def calcular_erros(self, data):
+        """
+        Calcula os dois erros usando um único loop pelas amostras:
+        
+          1. Erro de Quantização (QE): Distância Euclidiana média
+             Mede a distância média das amostras ao seu neurônio vencedor.
+             Fórmula: QE = (1/N) * Σ || x_i - w_vencedor(x_i) ||
+             
+          2. Erro Quadrático (EQ_i): Distância Quadrática por amostra
+             Mede a distância quadrática de cada amostra i ao seu vizinho vencedor k.
+             Fórmula: EQ_i = || x_i - w_vencedor(x_i) ||² = Σ_j (x_ij - w_kj)²
+             
+        Retorna:
+          qe_medio (float): O erro de quantização (QE) da época.
+          resultados_eq_amostras (list[dict]): Lista de erros quadráticos individuais (EQ_i).
+        """
+        resultados_eq_amostras = []
+        total_dist_euclidiana = 0.0
+        n = len(data)
+
+        for idx, ponto in enumerate(data):
+            vetor = [float(ponto[f]) for f in self.features]
+            vencedor_idx = self._winner(vetor)
+            w = self.weights[vencedor_idx]
+
+            # --- AQUI: Calcula Erro de Quantização (Distância Euclidiana) ---
+            dist_euclidiana = self._euclidean_distance(vetor, w)
+            total_dist_euclidiana += dist_euclidiana
+
+            # --- AQUI: Calcula Erro Quadrático Individual (Distância Quadrada) ---
+            eq = sum((vetor[j] - w[j]) ** 2 for j in range(len(vetor)))
+            resultados_eq_amostras.append({
+                "indice": idx,
+                "vetor": vetor,
+                "vencedor_idx": vencedor_idx,
+                "eq": eq,
+                "species": ponto.get("species", "N/A"),
+            })
+
+        qe_medio = total_dist_euclidiana / n if n > 0 else 0.0
+
+        return qe_medio, resultados_eq_amostras
+
+    def calcular_taxa_variancia(self):
+        """
+        Taxa de Variância (VR): variância média das posições dos neurônios
+        em torno do centróide dos pesos. Mede o espalhamento dos protótipos.
+
+        centróide_w = (1/K) * Σ w_k
+        VR = (1/K) * Σ || w_k - centróide_w ||²
+        """
+        k = len(self.weights)
+        if k == 0:
+            return 0.0
+        num_features = len(self.weights[0])
+
+        # Centróide dos neurônios
+        centroide_w = [0.0] * num_features
+        for w in self.weights:
+            for j in range(num_features):
+                centroide_w[j] += w[j]
+        centroide_w = [s / k for s in centroide_w]
+
+        # Variância média
+        variancia = 0.0
+        for w in self.weights:
+            dist_sq = sum((w[j] - centroide_w[j]) ** 2 for j in range(num_features))
+            variancia += dist_sq
+        return variancia / k
+
+    def calcular_taxa_decaimento(self):
+        """
+        Taxa de Decaimento (DR): variação relativa do QE entre épocas consecutivas.
+        Indica a velocidade de convergência do algoritmo.
+
+        DR_t = (QE_{t-1} - QE_t) / QE_{t-1}    (se QE_{t-1} != 0)
+
+        Um DR positivo indica melhora; próximo de 0 indica convergência.
+        """
+        decay = []
+        qe = self.quantization_errors
+        for t in range(1, len(qe)):
+            if qe[t - 1] != 0:
+                dr = (qe[t - 1] - qe[t]) / qe[t - 1]
+            else:
+                dr = 0.0
+            decay.append(dr)
+        return decay
+
     def train(self):
         for epoch in range(self.epochs):
             dados_epoca = self.data[:]
@@ -215,6 +307,15 @@ class Winner_take_all:
                 )
             # salva posição dos neurônios após cada época
             self.history.append([w[:] for w in self.weights])
+
+            # Registra as métricas após cada época usando a função unificada
+            qe, _ = self.calcular_erros(self.data)
+            vr = self.calcular_taxa_variancia()
+            self.quantization_errors.append(qe)
+            self.variance_rates.append(vr)
+
+        # Calcula taxa de decaimento após todas as épocas
+        self.decay_rates = self.calcular_taxa_decaimento()
 
     def train_live(self, training_data, pause=0.1):
         """
@@ -451,6 +552,128 @@ class Winner_take_all:
 
         return self._winner(input_vector)
 
+    def plot_metricas(self, titulo_extra=""):
+        """
+        Plota três gráficos em uma única figura:
+          1. Erro de Quantização por época
+          2. Taxa de Variância por época
+          3. Taxa de Decaimento entre épocas consecutivas
+        """
+        if not self.quantization_errors:
+            print("[AVISO] Nenhuma métrica registrada. Execute train() antes de plotar.")
+            return
+
+        epocas_qe_vr = list(range(1, len(self.quantization_errors) + 1))
+        # A taxa de decaimento tem uma época a menos (começa na época 2)
+        epocas_dr = list(range(2, len(self.decay_rates) + 2))
+
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+        titulo_base = f"WTA — Métricas de Treinamento{' | ' + titulo_extra if titulo_extra else ''}"
+        fig.suptitle(titulo_base, fontsize=14, fontweight="bold")
+
+        # --- Gráfico 1: Erro de Quantização ---
+        ax1 = axes[0]
+        ax1.plot(epocas_qe_vr, self.quantization_errors, marker="o", color="steelblue", linewidth=2)
+        ax1.fill_between(epocas_qe_vr, self.quantization_errors, alpha=0.15, color="steelblue")
+        ax1.set_title("Erro de Quantização (QE)", fontsize=12)
+        ax1.set_xlabel("Época")
+        ax1.set_ylabel("QE médio")
+        ax1.grid(True, linestyle="--", alpha=0.5)
+        ax1.set_xticks(epocas_qe_vr)
+
+        # --- Gráfico 2: Taxa de Variância ---
+        ax2 = axes[1]
+        ax2.plot(epocas_qe_vr, self.variance_rates, marker="s", color="darkorange", linewidth=2)
+        ax2.fill_between(epocas_qe_vr, self.variance_rates, alpha=0.15, color="darkorange")
+        ax2.set_title("Taxa de Variância (VR)", fontsize=12)
+        ax2.set_xlabel("Época")
+        ax2.set_ylabel("Variância média")
+        ax2.grid(True, linestyle="--", alpha=0.5)
+        ax2.set_xticks(epocas_qe_vr)
+
+        # --- Gráfico 3: Taxa de Decaimento ---
+        ax3 = axes[2]
+        if self.decay_rates:
+            cores_barras = ["green" if dr >= 0 else "crimson" for dr in self.decay_rates]
+            ax3.bar(epocas_dr, self.decay_rates, color=cores_barras, alpha=0.75, edgecolor="black", linewidth=0.7)
+            ax3.axhline(0, color="black", linewidth=0.8, linestyle="-")
+            ax3.set_title("Taxa de Decaimento (DR)", fontsize=12)
+            ax3.set_xlabel("Época")
+            ax3.set_ylabel("DR relativo")
+            ax3.grid(True, linestyle="--", alpha=0.5, axis="y")
+            ax3.set_xticks(epocas_dr)
+        else:
+            ax3.text(0.5, 0.5, "Épocas insuficientes\npara calcular DR",
+                     ha="center", va="center", transform=ax3.transAxes, fontsize=11)
+            ax3.set_title("Taxa de Decaimento (DR)", fontsize=12)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_erro_quadratico(self, data, titulo_extra=""):
+        """
+        Plota o erro quadrático individual de cada amostra em relação
+        ao seu neurônio vencedor. Exibe dois painéis:
+          1. Scatter: EQ_i por índice de amostra, colorido por neurônio vencedor
+          2. Histograma: distribuição dos erros quadráticos
+        Também imprime no terminal o EQ médio (MSE) e o EQ total (SSE).
+        """
+        _, resultados = self.calcular_erros(data)
+
+        indices   = [r["indice"]       for r in resultados]
+        erros_eq  = [r["eq"]           for r in resultados]
+        vencedores = [r["vencedor_idx"] for r in resultados]
+        especies  = [r["species"]      for r in resultados]
+
+        mse = sum(erros_eq) / len(erros_eq) if erros_eq else 0.0
+        sse = sum(erros_eq)
+
+        print("\n" + "=" * 55)
+        print("  ERRO QUADRÁTICO POR AMOSTRA")
+        print("=" * 55)
+        print(f"  MSE (médio)  : {mse:.6f}")
+        print(f"  SSE (total)  : {sse:.6f}")
+        print(f"  Amostras     : {len(erros_eq)}")
+        print("=" * 55 + "\n")
+
+        neuron_colors = ["steelblue", "darkorange", "purple", "teal", "crimson"]
+        titulo_base = f"Erro Quadrático por Amostra{' | ' + titulo_extra if titulo_extra else ''}"
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig.suptitle(titulo_base, fontsize=13, fontweight="bold")
+
+        # --- Painel 1: EQ por amostra colorido por neurônio vencedor ---
+        ax1 = axes[0]
+        for k in range(self.num_neurons):
+            idx_k = [indices[i] for i in range(len(resultados)) if vencedores[i] == k]
+            eq_k  = [erros_eq[i] for i in range(len(resultados)) if vencedores[i] == k]
+            color = neuron_colors[k % len(neuron_colors)]
+            ax1.scatter(idx_k, eq_k, color=color, alpha=0.7, s=30,
+                        label=f"Neurônio {k+1}", edgecolors="white", linewidth=0.3)
+
+        ax1.axhline(mse, color="red", linestyle="--", linewidth=1.5,
+                    label=f"MSE = {mse:.4f}")
+        ax1.set_title("EQ_i por índice de amostra", fontsize=11)
+        ax1.set_xlabel("Índice da amostra")
+        ax1.set_ylabel("Erro Quadrático (EQ_i)")
+        ax1.legend(loc="upper right", fontsize=9)
+        ax1.grid(True, linestyle="--", alpha=0.4)
+
+        # --- Painel 2: Histograma da distribuição dos EQ ---
+        ax2 = axes[1]
+        ax2.hist(erros_eq, bins=20, color="slategray", edgecolor="white",
+                 alpha=0.85, linewidth=0.6)
+        ax2.axvline(mse, color="red", linestyle="--", linewidth=1.5,
+                    label=f"MSE = {mse:.4f}")
+        ax2.set_title("Distribuição dos EQ_i", fontsize=11)
+        ax2.set_xlabel("Erro Quadrático (EQ_i)")
+        ax2.set_ylabel("Frequência")
+        ax2.legend(fontsize=9)
+        ax2.grid(True, linestyle="--", alpha=0.4)
+
+        plt.tight_layout()
+        plt.show()
+
     def test(self, test_data, train_data=None):
         """
         Classifica os dados de teste e avalia a qualidade do agrupamento.
@@ -577,7 +800,7 @@ class SimpleKMeans:
         for i in range(len(a)):
             soma += (a[i] - b[i]) ** 2
 
-        return soma**0.5
+        return math.sqrt(soma)
 
     def fit(self, data):
         self.centroids = random.sample(data, self.k)
@@ -684,8 +907,17 @@ if __name__ == "__main__":
     wta.train_live(processor.training_data, pause=0.1)
     # wta.train_live_by_sample(processor.training_data, pause=0.1)
 
+    # Plota métricas de convergência (QE, VR, DR)
+    wta.plot_metricas(titulo_extra="2D (sepal_length × petal_width)")
+
     # Passa o teste
     wta.test(test_data=processor.test_data, train_data=processor.training_data)
+
+    # Erro quadrático individual de cada amostra de treino
+    wta.plot_erro_quadratico(
+        processor.training_data,
+        titulo_extra="2D (sepal_length × petal_width)"
+    )
 
     # KMeans
     kmeans = SimpleKMeans(k=3)

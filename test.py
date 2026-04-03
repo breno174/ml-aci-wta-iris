@@ -168,10 +168,19 @@ def main():
     print(f">> Treinando WTA_4D por {wta.epochs} épocas...\n")
     wta.train()
 
+    # Plota métricas de convergência (QE, VR, DR) para o modelo 4D
+    wta.plot_metricas(titulo_extra="4D (sepal_length, sepal_width, petal_length, petal_width)")
+
     # 5. Avaliar modelo e exibir logs
     acuracia = wta.test(
         test_data=processor.test_data,
         train_data=processor.training_data,
+    )
+
+    # Erro quadrático individual de cada amostra de treino (4D)
+    wta.plot_erro_quadratico(
+        processor.training_data,
+        titulo_extra="4D (sepal_length, sepal_width, petal_length, petal_width)"
     )
 
     # 6. K-Means para comparação — treina sobre os vetores 4D de treino
